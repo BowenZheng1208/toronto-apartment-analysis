@@ -1,0 +1,1072 @@
+---
+title: "STAT 847 Final Project"
+author: "Bowen Zheng"
+date: "April 15, 2026"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    number_sections: true
+    toc: true
+fontsize: 11pt
+geometry: margin=1in
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center",
+  fig.width = 8,
+  fig.height = 5
+)
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+library(opendatatoronto)
+library(tidyverse)
+library(janitor)
+library(GGally)
+library(factoextra)
+library(cluster)
+library(broom)
+library(ggrepel)
+library(scales)
+library(sf)
+```
+
+\newpage
+
+# Introduction
+
+This project examines apartment building conditions in Toronto using the Apartment Building Evaluations dataset from Toronto Open Data. The main goal is to study how building age, size, condition, and ownership type are associated with apartment building evaluation scores, and whether buildings can be grouped into meaningful profiles.
+
+In this report, I complete two exploration tasks, four analysis tasks, and three presentation tasks. The main questions are how building characteristics relate to evaluation score, whether apartment buildings can be clustered into distinct groups, which variables are most important for predicting score, and how these patterns can be presented clearly and reproducibly.
+
+```{r include=FALSE}
+apt_resources <- search_packages("Apartment Building Evaluation") %>%
+  list_package_resources()
+
+apt_resources %>%
+  select(name, format)
+```
+
+# Dataset Description
+
+The Apartment Building Evaluations dataset contains building-level information on apartment buildings in Toronto, including structural characteristics, ownership type, condition-related measures, and spatial location. For this project, I focus on a subset of variables that are most useful for exploratory analysis, clustering, regression, feature extraction, principal component analysis, and visualization.
+
+```{r include=FALSE}
+apt_raw <- apt_resources %>%
+  filter(name == "Pre-2023 Apartment Building Evaluations.csv") %>%
+  get_resource()
+
+names(apt_raw)
+```
+
+# Exploration
+
+## E2. Transforming and Loading the Dataset
+
+Although the Apartment Building Evaluations dataset is available in CSV form, it still required several transformation and loading steps before it could be used for analysis. The raw dataset contained many variables, inconsistent naming conventions, and fields that were not immediately suitable for modeling.
+
+First, I standardized the variable names using `clean_names()` so that the column names would be easier to use consistently in later analysis. I then selected a smaller subset of variables using `select()`, keeping only those most relevant to the project goals. In particular, I retained variables related to evaluation score, building age, building size, condition measures, ownership category, and spatial location, because these were directly used in the later exploration, analysis, and presentation tasks.
+
+Next, I converted the main variables to appropriate formats. `property_type` and `wardname` were converted to factors, while the structural and condition-related variables were converted to numeric form. I also created a derived variable, `building_age`, by subtracting `year_built` from `year_evaluated`, so that building age could be used directly in later analysis.
+
+Finally, I removed observations with missing values in the key variables required for clustering, regression, feature extraction, PCA, and visualization. The resulting dataset was therefore a simplified and analysis-ready version of the original raw data.
+
+```{r include=FALSE}
+apt_data <- apt_raw %>%
+  janitor::clean_names() %>%
+  select(
+    rsn,
+    site_address,
+    year_registered,
+    year_evaluated,
+    year_built,
+    property_type,
+    wardname,
+    confirmed_storeys,
+    confirmed_units,
+    score,
+    security,
+    stairwells,
+    interior_lighting_levels,
+    graffiti,
+    entrance_lobby,
+    entrance_doors_windows,
+    parking_area,
+    latitude,
+    longitude
+  ) %>%
+  mutate(
+    property_type = factor(property_type),
+    wardname = factor(wardname),
+    building_age = year_evaluated - year_built,
+    score = as.numeric(score),
+    confirmed_storeys = as.numeric(confirmed_storeys),
+    confirmed_units = as.numeric(confirmed_units),
+    security = as.numeric(security),
+    stairwells = as.numeric(stairwells),
+    interior_lighting_levels = as.numeric(interior_lighting_levels),
+    graffiti = as.numeric(graffiti),
+    entrance_lobby = as.numeric(entrance_lobby),
+    entrance_doors_windows = as.numeric(entrance_doors_windows),
+    parking_area = as.numeric(parking_area),
+    latitude = as.numeric(latitude),
+    longitude = as.numeric(longitude)
+  ) %>%
+  filter(
+    !is.na(score),
+    !is.na(year_built),
+    !is.na(year_evaluated),
+    !is.na(building_age),
+    !is.na(confirmed_storeys),
+    !is.na(confirmed_units),
+    !is.na(security),
+    !is.na(stairwells),
+    !is.na(interior_lighting_levels),
+    !is.na(graffiti),
+    !is.na(latitude),
+    !is.na(longitude)
+  )
+
+glimpse(apt_data)
+summary(apt_data)
+```
+
+
+
+## E3. GGPairs Plot of Six Important Variables
+
+To explore the main structure of the apartment building dataset, I selected six variables that I consider especially important for this project: `score`, `building_age`, `confirmed_storeys`, `confirmed_units`, `security`, and `property_type`. These variables were chosen because together they capture the main dimensions of interest in the analysis: overall building evaluation, building age, building size, building condition, and ownership or management category. In particular, `score` is the main outcome variable, `building_age` represents an important structural characteristic, `confirmed_storeys` and `confirmed_units` describe building scale, `security` reflects one key aspect of building condition, and `property_type` serves as the categorical variable for comparing different building groups.
+
+These variables were also selected because they are closely connected to the later stages of the project. The relationships among score, age, size, condition, and ownership type are central to the clustering, regression, feature extraction, and visualization tasks that follow. As a result, they provide a compact but informative summary of the dataset and are well suited to exploratory analysis.
+
+```{r echo=FALSE, out.width='70%'}
+pairs_data <- apt_data %>%
+  select(
+    score,
+    building_age,
+    confirmed_storeys,
+    confirmed_units,
+    security,
+    property_type
+  )
+
+GGally::ggpairs(
+  pairs_data,
+  aes(color = property_type, alpha = 0.6),
+  upper = list(continuous = wrap("cor", size = 3)),
+  lower = list(continuous = wrap("points", size = 1.1)),
+  diag = list(continuous = wrap("densityDiag"))
+) +
+  theme_bw()
+```
+
+The `ggpairs` plot reveals several clear patterns. `score` is positively associated with `security`, suggesting that buildings with better security conditions tend to receive higher evaluation scores. In contrast, `building_age` is negatively associated with `score`, indicating that older buildings tend to perform somewhat worse on average.
+
+The plot also shows that `confirmed_storeys` and `confirmed_units` are strongly positively correlated, while `building_age` is negatively associated with both of them. This suggests that older apartment buildings tend to be smaller in scale. In addition, several variables differ across `property_type`, which means that ownership or management category may be an important grouping factor in later analyses.
+
+To improve the presentation of the figure, I colored the observations by `property_type`, included density plots on the diagonal, displayed correlations in the upper panels, and used point plots in the lower panels.
+
+```{r include=FALSE}
+apt_model <- apt_data %>%
+  mutate(
+    log_units = log(confirmed_units),
+    log_storeys = log(confirmed_storeys)
+  )
+
+summary(apt_model)
+```
+
+# Analysis
+
+## A3. Clustering Analysis
+
+To identify groups of apartment buildings with similar characteristics, I applied K-means clustering to the Toronto apartment building dataset. The goal was to determine whether the buildings could be grouped into a small number of meaningful profiles rather than treating the entire building stock as homogeneous.
+
+For the clustering variables, I selected `security`, `stairwells`, `interior_lighting_levels`, `graffiti`, `entrance_lobby`, `entrance_doors_windows`, `parking_area`, and `log_units`. These variables capture key aspects of building condition and building size. I excluded the overall score so that the clusters would reflect underlying building profiles rather than simply grouping buildings by their final evaluation score.
+
+Before clustering, I removed incomplete observations and standardized all selected variables. This was necessary because the variables were measured on different scales, and without standardization some variables could dominate the clustering process.
+
+To choose the number of clusters, I used an elbow plot based on the total within-cluster sum of squares.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+cluster_data <- apt_model %>%
+  select(
+    security,
+    stairwells,
+    interior_lighting_levels,
+    graffiti,
+    entrance_lobby,
+    entrance_doors_windows,
+    parking_area,
+    log_units
+  ) %>%
+  drop_na()
+
+cluster_scaled <- scale(cluster_data)
+```
+
+```{r echo=FALSE, out.width='70%'}
+set.seed(847)
+fviz_nbclust(cluster_scaled, kmeans, method = "wss") +
+  theme_bw() +
+  labs(title = "Elbow Plot for K-means Clustering")
+```
+
+The plot showed a large reduction in within-cluster variation for the first few clusters, after which the curve began to flatten. Although the elbow was not perfectly sharp, a four-cluster solution provided a reasonable balance between reducing within-cluster variation and maintaining interpretability. 
+
+```{r include=FALSE}
+set.seed(847)
+km_fit <- kmeans(cluster_scaled, centers = 4, nstart = 50)
+ 
+km_fit$size
+```
+
+```{r echo=FALSE, out.width='70%'}
+fviz_cluster(
+  km_fit,
+  data = cluster_scaled,
+  geom = "point",
+  labelsize = 0,
+  show.clust.cent = TRUE
+) +
+  theme_bw() +
+   labs(title = "Clusters of Toronto Apartment Buildings")
+```
+
+```{r include=FALSE}
+apt_clustered <- apt_model %>%
+  filter(
+    !is.na(security),
+    !is.na(stairwells),
+    !is.na(interior_lighting_levels),
+    !is.na(graffiti),
+    !is.na(entrance_lobby),
+    !is.na(entrance_doors_windows),
+    !is.na(parking_area),
+    !is.na(log_units)
+  ) %>%
+  mutate(cluster = factor(km_fit$cluster))
+
+apt_clustered %>%
+  group_by(cluster) %>%
+  summarise(
+    mean_score = mean(score),
+    mean_units = mean(confirmed_units),
+    mean_security = mean(security),
+    mean_graffiti = mean(graffiti),
+    n = n()
+  )
+```
+| Cluster | Mean score | Mean units | Mean security | Mean graffiti | n |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 60.87 | 134.98 | 3.37 | 3.05 | 1201 |
+| 2 | 84.16 | 103.71 | 4.68 | 4.91 | 2203 |
+| 3 | 74.30 | 99.30 | 4.29 | 4.78 | 3147 |
+| 4 | 64.05 | 41.25 | 3.28 | 4.82 | 2223 |
+
+After fitting the K-means model with four clusters, I summarized the average characteristics of each group. The results suggest that the four clusters are meaningfully different. Cluster 2 had the highest mean score and the strongest condition-related measures, so it can be interpreted as a high-quality, well-maintained group. Cluster 3 also performed relatively well, but not as strongly as Cluster 2, and can be viewed as a moderate-to-high quality group.
+
+In contrast, Cluster 1 had the lowest mean score, relatively weak security, and the lowest graffiti rating, despite having a fairly large average number of units. This suggests a group of larger but lower-condition buildings. Cluster 4 also had a relatively low score, but it was much smaller on average and had a stronger graffiti score than Cluster 1, suggesting a smaller group with mixed condition patterns.
+
+Overall, the clustering results show that Toronto apartment buildings can be divided into four meaningful profiles that differ in both building size and condition-related characteristics.
+
+```{r include=FALSE}
+fit_lm <- lm(
+  score ~ building_age + log_units + log_storeys +
+    security + stairwells + interior_lighting_levels +
+    graffiti + property_type,
+  data = apt_model
+)
+
+summary(fit_lm)
+```
+
+## A5. Regression Model for Building Score
+
+For the main modeling task, I used multiple linear regression with `score` as the response variable. I chose `score` because it is continuous and is the main outcome of interest in this project. The model was used to examine how building age, building size, selected condition-related variables, and property type are associated with apartment building evaluation scores.
+
+I chose linear regression because this part of the project emphasizes interpretation. Compared with more complex methods, a linear model makes it easier to assess the direction, relative size, and significance of multiple predictors at the same time. In addition, the earlier exploratory analysis suggested that several predictors had approximately monotone relationships with score, making linear regression a reasonable starting point.
+
+The fitted model included `building_age`, `log_units`, `log_storeys`, `security`, `stairwells`, `interior_lighting_levels`, `graffiti`, and `property_type`. The size variables were log-transformed because the original variables were right-skewed and the transformed versions are more stable for modeling. The results are shown below.
+
+| Variable                      | Estimate |   p-value |
+|:------------------------------|---------:|----------:|
+| building_age                  |   -0.027 | $< 0.001$ |
+| log_storeys                   |    0.727 | $< 0.001$ |
+| security                      |    3.377 | $< 0.001$ |
+| stairwells                    |    5.306 | $< 0.001$ |
+| interior_lighting_levels      |    3.620 | $< 0.001$ |
+| graffiti                      |    2.304 | $< 0.001$ |
+| property_type: SOCIAL HOUSING |    0.637 |     0.002 |
+| property_type: TCHC           |   -0.463 |     0.007 |
+
+The regression results show that several predictors are strongly associated with `score`. The condition-related variables all have positive and highly significant coefficients, and `stairwells` has the largest coefficient among them, suggesting that stairwell condition is especially strongly related to overall score.
+
+`building_age` has a negative and significant coefficient, indicating that older buildings tend to receive slightly lower scores. The size variables show a mixed pattern: `log_storeys` is positive and significant, while `log_units` is not significant. This suggests that the number of storeys adds useful information about score, whereas the number of units contributes less independent explanatory power.
+
+Property type is also associated with score. Relative to private buildings, social housing has a small positive coefficient and TCHC has a small negative coefficient. Overall, the model explains a large proportion of the variation in score, with \(R^2 = 0.7931\) and adjusted \(R^2 = 0.7929\).
+
+And I also make the diagnostic plots for this regression:
+
+```{r echo=FALSE, out.width='70%'}
+par(mfrow = c(2,2))
+plot(fit_lm)
+par(mfrow = c(1,1))
+```
+
+The diagnostic plots suggest that the linear model is a reasonable approximation. Although there is some mild non-constant variance, slight tail departure in the Q-Q plot, and a few potentially influential observations, there is no severe violation of the model assumptions.
+
+This model should be interpreted as identifying variables that are strongly associated with the overall evaluation score rather than establishing causal effects. Even so, it provides a useful summary of which building characteristics are most strongly related to apartment building evaluation outcomes in Toronto.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+library(randomForest)
+```
+
+## A6. Feature Extraction
+
+For feature extraction, I used a random forest model with `score` as the response variable. The goal was to identify which predictors are most important for explaining variation in apartment building evaluation scores. This complements the regression analysis in A5 by focusing on relative predictive importance rather than coefficients and significance tests.
+
+I chose random forest because it is well suited to datasets with multiple predictors and possible nonlinear relationships. It can also capture interactions among variables while providing variable importance measures, which makes it useful for feature extraction.
+
+The model included `building_age`, `log_units`, `log_storeys`, `security`, `stairwells`, `interior_lighting_levels`, `graffiti`, `entrance_lobby`, `entrance_doors_windows`, `parking_area`, and `property_type`. I used 500 trees and examined the variable importance output, focusing on `%IncMSE`, which measures how much predictive accuracy decreases when a variable is disrupted.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+rf_data <- apt_model %>%
+  select(
+    score,
+    building_age,
+    log_units,
+    log_storeys,
+    security,
+    stairwells,
+    interior_lighting_levels,
+    graffiti,
+    entrance_lobby,
+    entrance_doors_windows,
+    parking_area,
+    property_type
+  ) %>%
+  drop_na()
+```
+
+```{r include=FALSE}
+set.seed(847)
+
+rf_fit <- randomForest(
+  score ~ .,
+  data = rf_data,
+  importance = TRUE,
+  ntree = 500
+)
+
+rf_fit
+```
+
+```{r include=FALSE}
+importance(rf_fit)
+```
+
+```{r echo=FALSE, out.width='70%'}
+varImpPlot(rf_fit, main = "Random Forest Variable Importance for Building Score")
+```
+
+The random forest explains a large proportion of the variation in `score`, with about 89.67% of variance explained. The variable importance results show that condition-related variables are the strongest predictors, especially `parking_area`, `security`, `entrance_doors_windows`, `stairwells`, `interior_lighting_levels`, `graffiti`, and `entrance_lobby`. Among these, `parking_area` has the highest `%IncMSE`, suggesting that it contributes especially strongly to predictive accuracy.
+
+Structural variables such as `building_age`, `log_units`, and `log_storeys` also matter, but less strongly, while `property_type` contributes the least additional predictive information. These results are broadly consistent with the regression results from A5 and provide a clear data-driven summary of which variables matter most for apartment building evaluation outcomes in Toronto.
+
+```{r include=FALSE}
+pca_data <- apt_model %>%
+  select(
+    security,
+    stairwells,
+    interior_lighting_levels,
+    graffiti,
+    entrance_lobby,
+    entrance_doors_windows,
+    parking_area
+  ) %>%
+  drop_na()
+
+pca_scaled <- scale(pca_data)
+pca_fit <- prcomp(pca_scaled, center = TRUE, scale. = TRUE)
+
+summary(pca_fit)
+```
+
+## A7. Dimension Reduction
+
+To reduce the dimensionality of the condition-related variables, I applied principal component analysis (PCA). I chose PCA because several of the building condition variables appeared to be correlated and conceptually related to one another. Rather than analyzing each condition variable separately, PCA makes it possible to summarize them using a smaller number of latent dimensions.
+
+The PCA was performed on seven condition-related variables: `security`, `stairwells`, `interior_lighting_levels`, `graffiti`, `entrance_lobby`, `entrance_doors_windows`, and `parking_area`. These variables were standardized before analysis so that differences in scale would not dominate the principal components.
+
+```{r echo=FALSE, out.width='70%'}
+fviz_eig(pca_fit) +
+  theme_bw() +
+  labs(title = "Scree Plot")
+```
+
+```{r echo=FALSE, out.width='70%'}
+fviz_pca_var(
+  pca_fit,
+  repel = TRUE
+) +
+  theme_bw() +
+  labs(title = "PCA Variable Plot of Building Condition Variables")
+```
+
+```{r include=FALSE}
+round(pca_fit$rotation, 3)
+```
+
+The scree plot shows that the first principal component explains 48.5% of the total variation, while the first three principal components explain about 71.7% in total. This suggests that much of the variation in the condition-related variables can be summarized by a relatively small number of dimensions.
+
+The loading matrix and variable plot help interpret the components. PC1 has positive loadings for all variables, suggesting an overall building condition dimension. PC2 is dominated by `graffiti`, while PC3 is dominated by `parking_area`, indicating that these represent more specific sources of variation.
+
+Overall, the PCA results suggest that the condition-related variables are correlated and can be summarized by a few broader latent dimensions.
+
+# Presentation 
+## P2. Novel Visualization
+
+To highlight a pattern that is specific to this dataset, I constructed a ward-level choropleth map of average apartment building evaluation scores across Toronto. Because each building is associated with both a geographic location and a ward, the dataset is well suited to this kind of spatial summary.
+
+A raw point map would contain thousands of overlapping observations and would be difficult to interpret. To make the spatial pattern clearer, I aggregated building-level scores to the ward level and mapped the mean score for each ward instead.
+
+
+
+```{r include=FALSE}
+ward_summary <- apt_data %>%
+  group_by(wardname) %>%
+  summarise(
+    mean_score = mean(score, na.rm = TRUE),
+    n_buildings = n(),
+    mean_units = mean(confirmed_units, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ward_summary
+```
+
+```{r include=FALSE}
+ward_resources <- search_packages("City Wards") %>%
+  list_package_resources()
+
+ward_resources %>%
+  select(name, format)
+```
+
+```{r include=FALSE}
+ward_map_raw <- ward_resources %>%
+  filter(name == "City Wards Data", format == "GeoJSON") %>%
+  get_resource()
+
+class(ward_map_raw)
+names(ward_map_raw)
+```
+
+```{r include=FALSE}
+ward_map_raw %>%
+  sf::st_drop_geometry() %>%
+  select(AREA_NAME) %>%
+  distinct()
+
+apt_data %>%
+  select(wardname) %>%
+  distinct()
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+ward_summary <- apt_data %>%
+  group_by(wardname) %>%
+  summarise(
+    mean_score = mean(score, na.rm = TRUE),
+    n_buildings = n(),
+    mean_units = mean(confirmed_units, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r echo=FALSE, out.width='70%'}
+ward_plot <- ward_map_raw %>%
+  left_join(ward_summary, by = c("AREA_NAME" = "wardname"))
+
+ggplot(ward_plot) +
+  geom_sf(aes(fill = mean_score), color = "black", linewidth = 0.5) +
+  scale_fill_viridis_c(option = "plasma") +
+  theme_void() +
+  labs(
+    title = "Average Apartment Building Evaluation Score by Ward",
+    subtitle = "Toronto apartment building scores aggregated to ward level",
+    fill = "Mean score"
+  )
+```
+The resulting map shows that apartment building evaluation scores are not spatially uniform across Toronto. Some wards have noticeably higher mean scores than others, suggesting that building conditions vary geographically across the city.
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+summary_profile <- apt_model %>%
+  mutate(
+    unit_band = cut(
+      confirmed_units,
+      breaks = c(0, 50, 150, 300, Inf),
+      labels = c("<=50", "51-150", "151-300", "300+"),
+      right = TRUE
+    )
+  ) %>%
+  group_by(property_type, unit_band) %>%
+  summarise(
+    mean_score = mean(score, na.rm = TRUE),
+    mean_age = mean(building_age, na.rm = TRUE),
+    mean_units = mean(confirmed_units, na.rm = TRUE),
+    mean_security = mean(security, na.rm = TRUE),
+    mean_stairwells = mean(stairwells, na.rm = TRUE),
+    mean_lighting = mean(interior_lighting_levels, na.rm = TRUE),
+    mean_graffiti = mean(graffiti, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+library(tidyverse)
+
+profile_long <- summary_profile %>%
+  pivot_longer(
+    cols = c(
+      mean_score,
+      mean_age,
+      mean_units,
+      mean_security,
+      mean_stairwells,
+      mean_lighting,
+      mean_graffiti
+    ),
+    names_to = "metric",
+    values_to = "value"
+  ) %>%
+  group_by(metric) %>%
+  mutate(z_value = as.numeric(scale(value))) %>%
+  ungroup()
+```
+
+## P3. Multi-variable Visualization
+
+To present multiple building characteristics in a compact way, I constructed a profile heatmap based on combinations of `property_type` and `unit_band`. Instead of plotting individual buildings, this figure summarizes apartment building groups across several key metrics.
+
+The rows of the heatmap represent groups defined by ownership category and unit-size group, while the columns represent summary measures such as mean age, mean score, mean security, mean stairwell condition, mean lighting, mean graffiti score, and mean number of units. Because these variables are measured on different scales, I standardized the values within each metric before plotting them.
+
+This figure is more informative than a standard scatterplot because it shows multiple variables at once and makes it easier to compare overall building profiles across categories.
+
+```{r echo=FALSE, out.width='70%'}
+profile_heat <- summary_profile %>%
+  pivot_longer(
+    cols = c(
+      mean_score,
+      mean_age,
+      mean_units,
+      mean_security,
+      mean_stairwells,
+      mean_lighting,
+      mean_graffiti
+    ),
+    names_to = "metric",
+    values_to = "value"
+  ) %>%
+  group_by(metric) %>%
+  mutate(z_value = as.numeric(scale(value))) %>%
+  ungroup() %>%
+  mutate(group = paste(property_type, unit_band, sep = " | "))
+
+ggplot(profile_heat, aes(
+  x = metric,
+  y = fct_rev(group),
+  fill = z_value
+)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c() +
+  theme_bw() +
+  labs(
+    title = "Apartment Building Group Profiles",
+    subtitle = "Rows are property type and unit-size groups; values are standardized within metric",
+    x = NULL,
+    y = NULL,
+    fill = "Std. value"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1)
+  )
+```
+
+## P4. Reproducibility and Ease of Evaluation
+
+To make this analysis reproducible, I would keep the full workflow in a single R Markdown document so that the final report can be regenerated directly from the code. This allows another reader to follow the main steps of data access, cleaning, transformation, visualization, and modeling.
+
+Because the dataset is retrieved through the `opendatatoronto` package, reproducibility also requires documenting how the data were obtained, including the search term, selected resource, and dataset version. I would also record the main cleaning steps, such as variable selection, name standardization, derived variables, and the removal of missing values.
+
+For methods involving randomness, such as K-means clustering and random forest models, I would set a seed so that the results can be reproduced consistently. Finally, I would keep the report well organized and remove debugging output so that the analysis is easier for others to follow and evaluate.
+
+# Conclusion
+
+This project used the Toronto Apartment Building Evaluations dataset to study how building condition, structure, and ownership type are related to evaluation outcomes. The results showed that condition-related variables were especially important, while building age and size also played meaningful roles.
+
+Overall, the dataset was well suited to this project because it supported exploration, modeling, dimension reduction, and visualization in a single framework. Taken together, the results suggest that apartment building evaluation outcomes in Toronto reflect both maintenance-related characteristics and broader structural differences across buildings.
+
+\newpage
+
+# Appendix: Full R Code
+
+```{r}
+library(opendatatoronto)
+library(tidyverse)
+library(janitor)
+library(GGally)
+library(factoextra)
+library(cluster)
+library(broom)
+library(ggrepel)
+library(scales)
+library(sf)
+```
+
+```{r}
+apt_resources <- search_packages("Apartment Building Evaluation") %>%
+  list_package_resources()
+
+apt_resources %>%
+  select(name, format)
+```
+
+```{r}
+apt_raw <- apt_resources %>%
+  filter(name == "Pre-2023 Apartment Building Evaluations.csv") %>%
+  get_resource()
+
+names(apt_raw)
+```
+```{r}
+apt_data <- apt_raw %>%
+  janitor::clean_names() %>%
+  select(
+    rsn,
+    site_address,
+    year_registered,
+    year_evaluated,
+    year_built,
+    property_type,
+    wardname,
+    confirmed_storeys,
+    confirmed_units,
+    score,
+    security,
+    stairwells,
+    interior_lighting_levels,
+    graffiti,
+    entrance_lobby,
+    entrance_doors_windows,
+    parking_area,
+    latitude,
+    longitude
+  ) %>%
+  mutate(
+    property_type = factor(property_type),
+    wardname = factor(wardname),
+    building_age = year_evaluated - year_built,
+    score = as.numeric(score),
+    confirmed_storeys = as.numeric(confirmed_storeys),
+    confirmed_units = as.numeric(confirmed_units),
+    security = as.numeric(security),
+    stairwells = as.numeric(stairwells),
+    interior_lighting_levels = as.numeric(interior_lighting_levels),
+    graffiti = as.numeric(graffiti),
+    entrance_lobby = as.numeric(entrance_lobby),
+    entrance_doors_windows = as.numeric(entrance_doors_windows),
+    parking_area = as.numeric(parking_area),
+    latitude = as.numeric(latitude),
+    longitude = as.numeric(longitude)
+  ) %>%
+  filter(
+    !is.na(score),
+    !is.na(year_built),
+    !is.na(year_evaluated),
+    !is.na(building_age),
+    !is.na(confirmed_storeys),
+    !is.na(confirmed_units),
+    !is.na(security),
+    !is.na(stairwells),
+    !is.na(interior_lighting_levels),
+    !is.na(graffiti),
+    !is.na(latitude),
+    !is.na(longitude)
+  )
+
+glimpse(apt_data)
+summary(apt_data)
+```
+
+
+```{r out.width='70%'}
+pairs_data <- apt_data %>%
+  select(
+    score,
+    building_age,
+    confirmed_storeys,
+    confirmed_units,
+    security,
+    property_type
+  )
+
+GGally::ggpairs(
+  pairs_data,
+  aes(color = property_type, alpha = 0.6),
+  upper = list(continuous = wrap("cor", size = 3)),
+  lower = list(continuous = wrap("points", size = 1.1)),
+  diag = list(continuous = wrap("densityDiag"))
+) +
+  theme_bw()
+```
+
+
+```{r}
+apt_model <- apt_data %>%
+  mutate(
+    log_units = log(confirmed_units),
+    log_storeys = log(confirmed_storeys)
+  )
+
+summary(apt_model)
+```
+
+
+```{r}
+cluster_data <- apt_model %>%
+  select(
+    security,
+    stairwells,
+    interior_lighting_levels,
+    graffiti,
+    entrance_lobby,
+    entrance_doors_windows,
+    parking_area,
+    log_units
+  ) %>%
+  drop_na()
+
+cluster_scaled <- scale(cluster_data)
+```
+
+
+```{r out.width='70%'}
+set.seed(847)
+fviz_nbclust(cluster_scaled, kmeans, method = "wss") +
+  theme_bw() +
+  labs(title = "Elbow Plot for K-means Clustering")
+```
+
+
+```{r}
+set.seed(847)
+km_fit <- kmeans(cluster_scaled, centers = 4, nstart = 50)
+ 
+km_fit$size
+```
+
+```{r out.width='70%'}
+fviz_cluster(
+  km_fit,
+  data = cluster_scaled,
+  geom = "point",
+  labelsize = 0,
+  show.clust.cent = TRUE
+) +
+  theme_bw() +
+   labs(title = "Clusters of Toronto Apartment Buildings")
+```
+
+
+```{r}
+apt_clustered <- apt_model %>%
+  filter(
+    !is.na(security),
+    !is.na(stairwells),
+    !is.na(interior_lighting_levels),
+    !is.na(graffiti),
+    !is.na(entrance_lobby),
+    !is.na(entrance_doors_windows),
+    !is.na(parking_area),
+    !is.na(log_units)
+  ) %>%
+  mutate(cluster = factor(km_fit$cluster))
+
+apt_clustered %>%
+  group_by(cluster) %>%
+  summarise(
+    mean_score = mean(score),
+    mean_units = mean(confirmed_units),
+    mean_security = mean(security),
+    mean_graffiti = mean(graffiti),
+    n = n()
+  )
+```
+
+
+```{r}
+fit_lm <- lm(
+  score ~ building_age + log_units + log_storeys +
+    security + stairwells + interior_lighting_levels +
+    graffiti + property_type,
+  data = apt_model
+)
+
+summary(fit_lm)
+```
+
+
+```{r out.width='70%'}
+par(mfrow = c(2,2))
+plot(fit_lm)
+par(mfrow = c(1,1))
+```
+
+
+```{r}
+library(randomForest)
+rf_data <- apt_model %>%
+  select(
+    score,
+    building_age,
+    log_units,
+    log_storeys,
+    security,
+    stairwells,
+    interior_lighting_levels,
+    graffiti,
+    entrance_lobby,
+    entrance_doors_windows,
+    parking_area,
+    property_type
+  ) %>%
+  drop_na()
+```
+
+
+```{r}
+set.seed(847)
+
+rf_fit <- randomForest(
+  score ~ .,
+  data = rf_data,
+  importance = TRUE,
+  ntree = 500
+)
+
+rf_fit
+```
+
+
+```{r}
+importance(rf_fit)
+```
+
+
+```{r out.width='70%'}
+varImpPlot(rf_fit, main = "Random Forest Variable Importance for Building Score")
+```
+
+```{r}
+pca_data <- apt_model %>%
+  select(
+    security,
+    stairwells,
+    interior_lighting_levels,
+    graffiti,
+    entrance_lobby,
+    entrance_doors_windows,
+    parking_area
+  ) %>%
+  drop_na()
+
+pca_scaled <- scale(pca_data)
+pca_fit <- prcomp(pca_scaled, center = TRUE, scale. = TRUE)
+
+summary(pca_fit)
+```
+
+
+```{r out.width='70%'}
+fviz_eig(pca_fit) +
+  theme_bw() +
+  labs(title = "Scree Plot")
+```
+
+
+```{r out.width='70%'}
+fviz_pca_var(
+  pca_fit,
+  repel = TRUE
+) +
+  theme_bw() +
+  labs(title = "PCA Variable Plot of Building Condition Variables")
+```
+
+
+```{r}
+round(pca_fit$rotation, 3)
+```
+
+
+```{r}
+ward_summary <- apt_data %>%
+  group_by(wardname) %>%
+  summarise(
+    mean_score = mean(score, na.rm = TRUE),
+    n_buildings = n(),
+    mean_units = mean(confirmed_units, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ward_summary
+```
+
+
+```{r}
+ward_resources <- search_packages("City Wards") %>%
+  list_package_resources()
+
+ward_resources %>%
+  select(name, format)
+```
+
+
+```{r}
+ward_map_raw <- ward_resources %>%
+  filter(name == "City Wards Data", format == "GeoJSON") %>%
+  get_resource()
+
+class(ward_map_raw)
+names(ward_map_raw)
+```
+
+
+```{r}
+ward_map_raw %>%
+  sf::st_drop_geometry() %>%
+  select(AREA_NAME) %>%
+  distinct()
+
+apt_data %>%
+  select(wardname) %>%
+  distinct()
+```
+
+```{r}
+ward_summary <- apt_data %>%
+  group_by(wardname) %>%
+  summarise(
+    mean_score = mean(score, na.rm = TRUE),
+    n_buildings = n(),
+    mean_units = mean(confirmed_units, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r out.width='70%'}
+ward_plot <- ward_map_raw %>%
+  left_join(ward_summary, by = c("AREA_NAME" = "wardname"))
+
+ggplot(ward_plot) +
+  geom_sf(aes(fill = mean_score), color = "black", linewidth = 0.5) +
+  scale_fill_viridis_c(option = "plasma") +
+  theme_void() +
+  labs(
+    title = "Average Apartment Building Evaluation Score by Ward",
+    subtitle = "Toronto apartment building scores aggregated to ward level",
+    fill = "Mean score"
+  )
+```
+
+```{r}
+summary_profile <- apt_model %>%
+  mutate(
+    unit_band = cut(
+      confirmed_units,
+      breaks = c(0, 50, 150, 300, Inf),
+      labels = c("<=50", "51-150", "151-300", "300+"),
+      right = TRUE
+    )
+  ) %>%
+  group_by(property_type, unit_band) %>%
+  summarise(
+    mean_score = mean(score, na.rm = TRUE),
+    mean_age = mean(building_age, na.rm = TRUE),
+    mean_units = mean(confirmed_units, na.rm = TRUE),
+    mean_security = mean(security, na.rm = TRUE),
+    mean_stairwells = mean(stairwells, na.rm = TRUE),
+    mean_lighting = mean(interior_lighting_levels, na.rm = TRUE),
+    mean_graffiti = mean(graffiti, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+library(tidyverse)
+
+profile_long <- summary_profile %>%
+  pivot_longer(
+    cols = c(
+      mean_score,
+      mean_age,
+      mean_units,
+      mean_security,
+      mean_stairwells,
+      mean_lighting,
+      mean_graffiti
+    ),
+    names_to = "metric",
+    values_to = "value"
+  ) %>%
+  group_by(metric) %>%
+  mutate(z_value = as.numeric(scale(value))) %>%
+  ungroup()
+```
+
+```{r out.width='70%'}
+profile_heat <- summary_profile %>%
+  pivot_longer(
+    cols = c(
+      mean_score,
+      mean_age,
+      mean_units,
+      mean_security,
+      mean_stairwells,
+      mean_lighting,
+      mean_graffiti
+    ),
+    names_to = "metric",
+    values_to = "value"
+  ) %>%
+  group_by(metric) %>%
+  mutate(z_value = as.numeric(scale(value))) %>%
+  ungroup() %>%
+  mutate(group = paste(property_type, unit_band, sep = " | "))
+
+ggplot(profile_heat, aes(
+  x = metric,
+  y = fct_rev(group),
+  fill = z_value
+)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis_c() +
+  theme_bw() +
+  labs(
+    title = "Apartment Building Group Profiles",
+    subtitle = "Rows are property type and unit-size groups; values are standardized within metric",
+    x = NULL,
+    y = NULL,
+    fill = "Std. value"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1)
+  )
+```
+
